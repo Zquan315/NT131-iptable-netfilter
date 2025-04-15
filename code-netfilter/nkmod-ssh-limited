@@ -1,0 +1,93 @@
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/netfilter.h>
+#include <linux/netfilter_ipv4.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/string.h>
+
+static struct nf_hook_ops *nf_hook_ex_ops = NULL;
+#define MAX_SSH 1
+static int ssh_count = 0;
+static __be32 ssh_host_list[1];
+static unsigned int nf_hook_ex(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+{
+	struct iphdr *iph;
+	struct tcphdr *tcph;
+    bool found = false;
+
+	if(!skb)
+		return NF_ACCEPT;
+	iph = ip_hdr(skb);
+	/*if (iph->protocol == 1) {
+		printk(KERN_INFO "Droped received packet \n");
+		return NF_DROP;
+	}*/
+	
+	if (iph->protocol == IPPROTO_TCP) {
+        tcph = tcp_hdr(skb);
+        if (ntohs(tcph->dest) == 22) {
+            // Kiểm tra xem IP này đã tồn tại trong mảng chưa
+            if (ssh_host_list[0] == iph->saddr) {
+                found = true;
+            }
+
+            // Nếu IP chưa có trong mảng và đã đạt giới hạn thì chặn kết nối
+            if (!found) {
+                if (ssh_count >= MAX_SSH) {
+                    printk(KERN_INFO "Maximum SSH hosts reached\n");
+                    return NF_DROP;
+                } 
+				else {
+                    // Thêm IP mới vào mảng
+                    ssh_host_list[0] = iph->saddr;
+					++ssh_count;
+                    printk(KERN_INFO "New SSH host allowed\n");
+                }
+            }
+        }
+    }
+	return NF_ACCEPT;
+}
+
+/* Được gọi khi sử dụng lệnh 'insmod' */
+static int __init kmod_init(void) {
+	nf_hook_ex_ops = (struct nf_hook_ops*)kcalloc(1,  sizeof(struct nf_hook_ops), GFP_KERNEL);
+	if (nf_hook_ex_ops != NULL) {
+		ssh_count = 0;
+		/* đây là hàm callback `nf_hook_ex` kiểu nf_hookfn - định nghĩa trong include/linux/netfilter.h, line 47
+				- các tham số của hook mà người dùng định nghĩa phải khớp với kiểu nf_hookfn */
+		nf_hook_ex_ops->hook = (nf_hookfn*)nf_hook_ex;
+		
+		/* Sự kiện mà hook này đăng ký  */
+		//nf_hook_ex_ops->hooknum = NF_INET_PRE_ROUTING; 
+		nf_hook_ex_ops->hooknum = NF_INET_LOCAL_IN;
+
+		/* Chỉ xử lý các Internet (IPv4) packet  */
+		nf_hook_ex_ops->pf = NFPROTO_IPV4;
+
+		/* Cài đặt độ ưu tiên của hook này ở mức độ cao nhất*/
+		nf_hook_ex_ops->priority = NF_IP_PRI_FIRST;
+		
+		nf_register_net_hook(&init_net, nf_hook_ex_ops);
+	}
+	return 0;
+}
+
+
+static void __exit kmod_exit(void) {
+	if(nf_hook_ex_ops != NULL) {
+		nf_unregister_net_hook(&init_net, nf_hook_ex_ops);
+		kfree(nf_hook_ex_ops);
+	}
+	printk(KERN_INFO "Exit");
+}
+
+module_init(kmod_init);
+module_exit(kmod_exit);
+
+MODULE_LICENSE("GPL");
+
+
